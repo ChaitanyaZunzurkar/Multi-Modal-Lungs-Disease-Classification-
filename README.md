@@ -1,4 +1,4 @@
-# 🫁 Multi-Modal Lung Disease Classification Workspace
+# Multi-Modal Lung Disease Classification Workspace
 
 ![Python](https://img.shields.io/badge/Python-3.10-blue?logo=python&logoColor=white)
 ![TensorFlow](https://img.shields.io/badge/TensorFlow-2.x-FF6F00?logo=tensorflow&logoColor=white)
