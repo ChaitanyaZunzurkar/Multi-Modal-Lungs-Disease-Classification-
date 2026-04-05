@@ -33,9 +33,6 @@ share/python-wheels/
 MANIFEST
 .pytest_cache/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
 
 # Node/npm
 node_modules/
