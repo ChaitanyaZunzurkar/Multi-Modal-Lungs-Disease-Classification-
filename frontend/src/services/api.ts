@@ -1,12 +1,12 @@
 import { TabularInputs, PredictionResponse } from '../types';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export const checkApiHealth = async (): Promise<boolean> => {
   try {
     const response = await fetch(`${API_BASE_URL}/health`);
     return response.ok;
-  } catch (error) {
+  } catch {
     return false;
   }
 };
@@ -22,14 +22,10 @@ export const predictPatientData = async ({
 }): Promise<PredictionResponse> => {
   const formData = new FormData();
 
-  if (imageFile) {
-    formData.append('image', imageFile);
-  }
+  if (imageFile) formData.append('image', imageFile);
+  if (audioFile) formData.append('audio', audioFile);
 
-  if (audioFile) {
-    formData.append('audio', audioFile);
-  }
-
+  // Append tabular fields
   (Object.keys(tabular) as Array<keyof TabularInputs>).forEach((key) => {
     formData.append(key, String(tabular[key]));
   });
@@ -41,7 +37,7 @@ export const predictPatientData = async ({
 
   if (!response.ok) {
     const errorData = await response.json();
-    throw new Error(errorData.detail || 'Prediction failed');
+    throw new Error(errorData.detail || 'Analysis failed');
   }
 
   return response.json();

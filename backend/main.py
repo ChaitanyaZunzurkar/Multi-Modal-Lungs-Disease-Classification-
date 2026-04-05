@@ -11,11 +11,15 @@ import librosa
 import joblib
 from PIL import Image
 import uvicorn
+from dotenv import load_dotenv  # Added for .env support
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ==================== DATA MODELS ====================
 
@@ -60,20 +64,32 @@ class ModelLoader:
         self.load_models()
 
     def load_models(self):
-        model_dir = Path(__file__).parent.parent / "models" / "keras"
-        keras_model = model_dir / "best_global_model.keras"
-        h5_model = model_dir / "best_global_model.h5"
+        # 1. Load Global Model using MODEL_PATH from .env
+        default_model_path = Path(__file__).parent.parent / "models" / "keras" / "best_global_model.keras"
+        env_model_path = os.getenv("MODEL_PATH")
         
-        if keras_model.exists():
-            self.model = keras.models.load_model(str(keras_model))
-        elif h5_model.exists():
-            self.model = keras.models.load_model(str(h5_model))
+        model_path = Path(env_model_path) if env_model_path else default_model_path
+        
+        if model_path.exists():
+            print(f"Loading model from: {model_path}")
+            self.model = keras.models.load_model(str(model_path))
         else:
-            raise FileNotFoundError("Global model not found.")
+            # Fallback check for .h5 if .keras isn't found
+            h5_path = model_path.with_suffix('.h5')
+            if h5_path.exists():
+                self.model = keras.models.load_model(str(h5_path))
+            else:
+                raise FileNotFoundError(f"Model not found at {model_path}")
         
-        artifacts_dir = Path(__file__).parent.parent / "artifacts"
+        # 2. Load Artifacts using SCALER_PATH from .env
+        default_artifacts_dir = Path(__file__).parent.parent / "artifacts"
+        env_scaler_path = os.getenv("SCALER_PATH")
+        
+        # Determine the base directory for artifacts based on the scaler path
+        artifacts_dir = Path(env_scaler_path).parent if env_scaler_path else default_artifacts_dir
+        
         preprocessor_files = {
-            'scaler': 'tabular_scaler.joblib',
+            'scaler': os.path.basename(env_scaler_path) if env_scaler_path else 'tabular_scaler.joblib',
             'num_imputer': 'tabular_num_imputer.joblib',
             'cat_imputer': 'tabular_cat_imputer.joblib',
             'label_encoder': 'tabular_label_encoder.joblib',
@@ -98,7 +114,7 @@ def preprocess_audio(audio_data: bytes, sr: int = 22050, duration: float = 5.0, 
         tmp.write(audio_data)
         tmp_path = tmp.name
     try:
-        y, sr_loaded = librosa.load(tmp_path, sr=sr, duration=duration, mono=True)
+        y, _ = librosa.load(tmp_path, sr=sr, duration=duration, mono=True)
         target_len = int(sr * duration)
         y = np.pad(y, (0, max(0, target_len - len(y))), mode="constant")[:target_len]
 
@@ -123,16 +139,13 @@ def preprocess_tabular(inputs: TabularInputs, loader: ModelLoader) -> np.ndarray
     smoking_status = smoking_map.get(inputs.smoking_status, 0.0)
     
     yes_no_map = {'Yes': 1.0, 'No': 0.0}
-    wheeze = yes_no_map.get(inputs.wheeze, 0.0)
-    chest_tightness = yes_no_map.get(inputs.chest_tightness, 0.0)
-    crackles = yes_no_map.get(inputs.crackles, 0.0)
-    fever = yes_no_map.get(inputs.fever, 0.0)
-    
     feature_vector = [
         float(inputs.age), float(gender_enc), float(smoking_status),
         float(inputs.fev1_percent), float(inputs.spo2), float(inputs.respiratory_rate),
-        float(inputs.cough_severity), float(wheeze), float(chest_tightness),
-        float(crackles), float(fever), float(inputs.bmi), float(inputs.copd_exacerbations)
+        float(inputs.cough_severity), float(yes_no_map.get(inputs.wheeze, 0.0)), 
+        float(yes_no_map.get(inputs.chest_tightness, 0.0)),
+        float(yes_no_map.get(inputs.crackles, 0.0)), float(yes_no_map.get(inputs.fever, 0.0)), 
+        float(inputs.bmi), float(inputs.copd_exacerbations)
     ]
     
     data_array = np.array([feature_vector], dtype=np.float32)
@@ -153,7 +166,6 @@ def get_disease_label_and_message(prediction: float) -> tuple:
 
 def generate_final_report(probs: np.ndarray) -> FinalReport:
     MASTER_CLASSES = ["asthma", "copd", "healthy", "pneumonia"]
-    
     idx = int(np.argmax(probs))
     predicted_class = MASTER_CLASSES[idx]
     confidence = float(probs[idx])
@@ -162,13 +174,13 @@ def generate_final_report(probs: np.ndarray) -> FinalReport:
         "copd": ["Spirometry (FEV1/FVC < 0.70)", "CT chest for emphysema", "Initiate LABA/LAMA"],
         "pneumonia": ["Chest X-ray for consolidation", "CBC, CRP monitoring", "Empiric antibiotics"],
         "asthma": ["Peak flow monitoring", "IgE testing", "Initiate ICS step therapy"],
-        "healthy": ["No acute respiratory pathology detected", "Annual routine check-up", "Maintain healthy lifestyle"]
+        "healthy": ["No acute respiratory pathology detected", "Annual routine check-up"]
     }
     
     return FinalReport(
         predicted_class=predicted_class.upper(),
         overall_confidence=confidence,
-        recommendation=recommendations.get(predicted_class, []),
+        recommendation=recommendations.get(predicted_class, ["Follow clinical guidelines"]),
         note="AI-synthesized multimodal evidence."
     )
 
@@ -185,9 +197,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Multimodal Lung Disease Detection API", lifespan=lifespan)
 
+# Setup CORS using ALLOWED_ORIGINS from .env
+raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+origins = [origin.strip() for origin in raw_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -235,14 +251,10 @@ async def predict(
         img_score = disease_prob if image else 0.0
         aud_score = disease_prob if audio else 0.0
         
-        image_label, image_msg = get_disease_label_and_message(img_score)
-        audio_label, audio_msg = get_disease_label_and_message(aud_score)
-        tabular_label, tabular_msg = get_disease_label_and_message(disease_prob)
-
         return PredictionResponse(
-            image_branch=BranchScore(label=image_label if image else "Not Provided", confidence=img_score, message=image_msg if image else "-"),
-            audio_branch=BranchScore(label=audio_label if audio else "Not Provided", confidence=aud_score, message=audio_msg if audio else "-"),
-            tabular_branch=BranchScore(label=tabular_label, confidence=disease_prob, message=tabular_msg),
+            image_branch=BranchScore(label="Image Analysis", confidence=img_score, message=get_disease_label_and_message(img_score)[1]),
+            audio_branch=BranchScore(label="Audio Analysis", confidence=aud_score, message=get_disease_label_and_message(aud_score)[1]),
+            tabular_branch=BranchScore(label="Clinical Data", confidence=disease_prob, message=get_disease_label_and_message(disease_prob)[1]),
             final_report=generate_final_report(predictions)
         )
         
@@ -251,4 +263,7 @@ async def predict(
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    # Get Port and Host from .env
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    uvicorn.run("main:app", host=host, port=port, reload=True, log_level="info")
